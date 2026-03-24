@@ -1,0 +1,50 @@
+# Define variables
+$ToolUrl = "http://download.bitdefender.com/SMB/Hydra/release/bst_win/uninstallTool/BEST_uninstallTool.exe"
+$ToolPath = "C:\Windows\Temp\BEST_uninstallTool.exe"
+$UninstallPassword = "YOUR_PASSWORD_HERE"
+$RebootTime = "23:00" # 24-hour format
+
+# 1. Download the executable
+Write-Host "Downloading BEST Uninstall Tool..."
+Invoke-WebRequest -Uri $ToolUrl -OutFile $ToolPath
+
+# 2. Execute the tool and capture the exit code
+Write-Host "Running uninstaller..."
+$UninstallProcess = Start-Process -FilePath $ToolPath -ArgumentList "/password=`"$UninstallPassword`" /bruteForce /noWait" -Wait -NoNewWindow -PassThru
+
+$ExitCode = $UninstallProcess.ExitCode
+Write-Host "Uninstaller finished with Exit Code: $ExitCode"
+
+# 3. Verify success and handle scheduling/conflicts
+if ($ExitCode -eq 0 -or $ExitCode -eq 3010) {
+    Write-Host "SUCCESS: Uninstallation completed. A reboot is the only remaining step to fully clear Bitdefender."
+    
+    # Schedule the end-of-day reboot
+    Write-Host "Scheduling forced reboot for $RebootTime..."
+    schtasks /create /tn "Ninja_Bitdefender_Reboot" /tr "shutdown.exe /r /f /t 0" /sc once /st $RebootTime /ru SYSTEM /rl HIGHEST /F
+
+} else {
+    Write-Warning "FAILURE: Uninstallation was unsuccessful."
+    Write-Warning "Checking for conflicts..."
+
+    # Check if the primary Endpoint Agent service is still running
+    $BDService = Get-Service -Name "epag" -ErrorAction SilentlyContinue
+    if ($BDService) {
+        Write-Warning "Conflict Detected: Bitdefender Endpoint Agent service ('epag') is still installed. Status: $($BDService.Status)"
+    } else {
+        Write-Warning "Conflict Detected: The primary service is gone, but the uninstaller reported a failure. Residual files or registry keys likely remain."
+    }
+
+    # Evaluate common failure codes
+    if ($ExitCode -eq 1603) {
+        Write-Warning "Conflict Reason: Fatal error during installation/uninstallation. The password may be incorrect, or the script lacks SYSTEM privileges."
+    } else {
+        Write-Warning "Conflict Reason: Unexpected exit code. Check 'C:\Windows\Temp\BDEndpointRemovalTool.log' on the local machine for detailed failure logs."
+    }
+
+    Write-Error "The planned reboot has been aborted because the uninstallation did not finish cleanly."
+}
+
+# 4. Clean up the downloaded file
+Write-Host "Cleaning up the installer..."
+Remove-Item -Path $ToolPath -Force -ErrorAction SilentlyContinue
