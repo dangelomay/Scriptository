@@ -1,0 +1,54 @@
+<#
+.SYNOPSIS
+Disables the Windows Hypervisor platform at boot to prevent OEM security tools 
+or default Windows virtualization features from hoarding "Driver Locked" RAM.
+
+.DESCRIPTION
+Designed for NinjaOne Mass Deployment. 
+Checks current BCD state, disables hypervisorlaunchtype, and outputs RMM-friendly logs.
+Does NOT force a hard reboot, allowing the RMM's native reboot policies to handle it gracefully.
+#>
+
+$ErrorActionPreference = "Stop"
+
+Write-Output "====================================================="
+Write-Output "      HYPERVISOR / GHOST RAM REMEDIATION SCRIPT      "
+Write-Output "====================================================="
+
+try {
+    Write-Output "Checking current Hypervisor boot configuration..."
+    
+    # Check the current hypervisor status in the boot configuration
+    $bcdStatus = bcdedit /enum | Select-String "hypervisorlaunchtype"
+    
+    if ($bcdStatus -match "Off") {
+        Write-Output "[STATUS] Hypervisor is already set to OFF. No changes required."
+        Write-Output "Exiting script cleanly."
+        exit 0
+    }
+    else {
+        Write-Output "[ACTION] Hypervisor is currently active or set to Auto."
+        Write-Output "Applying fix: Disabling hypervisor launch type to free up Driver Locked memory..."
+        
+        # Apply the fix
+        Invoke-Expression "bcdedit /set hypervisorlaunchtype off" | Out-Null
+        
+        # Verify the fix stuck
+        $verify = bcdedit /enum | Select-String "hypervisorlaunchtype"
+        
+        if ($verify -match "Off") {
+            Write-Output "[SUCCESS] Hypervisor launch type successfully disabled."
+            Write-Output "-----------------------------------------------------"
+            Write-Output " ACTION REQUIRED: A system reboot is necessary for "
+            Write-Output " Windows to physically release the locked RAM. "
+            Write-Output "-----------------------------------------------------"
+        } else {
+            Write-Output "[ERROR] Command executed, but BCD configuration did not update."
+        }
+    }
+}
+catch {
+    Write-Output "[FAILED] An error occurred: $($_.Exception.Message)"
+    Write-Output "Ensure this script is running in the SYSTEM context via NinjaOne."
+    exit 1
+}
