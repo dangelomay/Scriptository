@@ -1,0 +1,50 @@
+<#
+.SYNOPSIS
+Scans the endpoint via WMI to detect installed Antivirus and Endpoint Protection products,
+and translates their hex status into readable states.
+#>
+
+Write-Output "====================================================="
+Write-Output "         ENDPOINT SECURITY RECONNAISSANCE            "
+Write-Output "====================================================="
+
+try {
+    # Query the Security Center WMI namespace
+    $AVInfo = Get-WmiObject -Namespace "root\SecurityCenter2" -Class AntiVirusProduct -ErrorAction Stop
+    
+    if (-not $AVInfo) {
+        Write-Output "No Antivirus products registered in Windows Security Center."
+        exit
+    }
+
+    $Report = @()
+
+    foreach ($AV in $AVInfo) {
+        $Name = $AV.displayName
+        
+        # Convert productState to Hex to determine status
+        $HexState = "{0:x}" -f $AV.productState
+        
+        # Parse the 2nd character of the hex string (0 = Disabled, 1 = Enabled)
+        $StatusFlag = $HexState.Substring(1,1)
+        
+        # Parse the 3rd/4th character for signature age (00 = Up to date, 10 = Out of date)
+        $SigFlag = $HexState.Substring(2,2)
+
+        $IsActive = if ($StatusFlag -eq "1") { "Enabled" } else { "Disabled" }
+        $IsUpdated = if ($SigFlag -eq "00") { "Up-to-date" } else { "Out-of-date" }
+
+        $Report += [PSCustomObject]@{
+            "Product Name"    = $Name
+            "Protection"      = $IsActive
+            "Signatures"      = $IsUpdated
+            "Executable Path" = $AV.pathToSignedProductExe
+        }
+    }
+
+    $Report | Format-Table -AutoSize | Out-String | Write-Output
+
+} catch {
+    Write-Output "Failed to query Security Center. Ensure the script is running as Administrator."
+    Write-Output "Error: $($_.Exception.Message)"
+}
