@@ -1,0 +1,59 @@
+<#
+.SYNOPSIS
+Neutralizes consumer features, disables telemetry, removes built-in bloatware, 
+and stops non-essential services on new Windows workstation deployments.
+#>
+
+$ErrorActionPreference = "SilentlyContinue"
+
+Write-Output "Starting Enterprise Onboarding Baseline..."
+
+# --- 1. DISABLE TELEMETRY & DIAGNOSTICS ---
+Write-Output "Disabling Windows Telemetry..."
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name "AllowTelemetry" -Type DWord -Value 0
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name "MaxTelemetryAllowed" -Type DWord -Value 0
+Disable-ScheduledTask -TaskPath "\Microsoft\Windows\Customer Experience Improvement Program\" -TaskName "Consolidator"
+Disable-ScheduledTask -TaskPath "\Microsoft\Windows\Customer Experience Improvement Program\" -TaskName "UsbCeip"
+
+# --- 2. REMOVE CONSUMER BLOATWARE (APPX) ---
+Write-Output "Removing consumer Appx packages..."
+$Bloatware = @(
+    "*BingNews*",
+    "*BingWeather*",
+    "*CandyCrush*",
+    "*Disney*",
+    "*Facebook*",
+    "*HiddenCity*",
+    "*Instagram*",
+    "*MarchOfEmpires*",
+    "*Netflix*",
+    "*SkypeApp*",
+    "*SolitaireCollection*",
+    "*Spotify*",
+    "*TikTok*",
+    "*XboxApp*",
+    "*ZuneMusic*",
+    "*ZuneVideo*"
+)
+
+foreach ($App in $Bloatware) {
+    Get-AppxPackage -Name $App -AllUsers | Remove-AppxPackage -AllUsers
+    Get-AppxProvisionedPackage -Online | Where-Object DisplayName -like $App | Remove-AppxProvisionedPackage -Online
+}
+
+# --- 3. DISABLE NON-ESSENTIAL SERVICES ---
+Write-Output "Disabling Xbox and Consumer Services..."
+$ServicesToDisable = @("XblAuthManager", "XblGameSave", "XboxNetApiSvc", "DiagTrack", "dmwappushservice", "MapsBroker")
+foreach ($Service in $ServicesToDisable) {
+    Set-Service -Name $Service -StartupType Disabled
+    Stop-Service -Name $Service -Force
+}
+
+# --- 4. CLEAN UP TASKBAR & START MENU ---
+Write-Output "Cleaning up Taskbar..."
+# Hide Cortana
+Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Search" -Name "CortanaButtonIsVisible" -Type DWord -Value 0
+# Hide Task View
+Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "ShowTaskViewButton" -Type DWord -Value 0
+
+Write-Output "Enterprise Onboarding Baseline Complete. A reboot is recommended."
