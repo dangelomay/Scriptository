@@ -1,0 +1,60 @@
+<#
+.SYNOPSIS
+Authenticates with the NinjaOne API to assign a ticket and post a remediation log.
+#>
+
+# Define specific NinjaOne instance URL
+$NinjaBaseUrl = "https://app.ninjarmm.com"
+
+# Pull secure credentials from Ninja variables
+$ClientId = $env:NINJA_CLIENT_ID
+$ClientSecret = $env:NINJA_CLIENT_SECRET
+$TechnicianId = 1234 # REPLACE WITH ACTUAL TECHNICIAN ID
+
+$TicketId = $env:NINJA_TICKET_ID
+
+if (-not $TicketId) {
+    Write-Output "No Ticket ID found in environment. Exiting."
+    exit
+}
+
+# --- 1. GET OAUTH2 TOKEN ---
+$TokenBody = @{
+    grant_type    = "client_credentials"
+    scope         = "monitoring"
+}
+
+$AuthHeader = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${ClientId}:${ClientSecret}"))
+
+$TokenResponse = Invoke-RestMethod -Uri "$NinjaBaseUrl/ws/oauth/token" -Method Post -Headers @{
+    Authorization = "Basic $AuthHeader"
+} -Body $TokenBody -ContentType "application/x-www-form-urlencoded"
+
+$AccessToken = $TokenResponse.access_token
+
+$ApiHeaders = @{
+    Authorization = "Bearer $AccessToken"
+    "Content-Type" = "application/json"
+}
+
+# --- 2. THE REMEDIATION LOGIC ---
+# [INSERT REMEDIATION CODE HERE]
+$RemediationNotes = "Automated Script ran successfully. CPU processes stabilized."
+
+# --- 3. UPDATE THE TICKET ---
+$UpdateBody = @{
+    assignedTo = @{ id = $TechnicianId }
+    status     = @{ name = "Resolved" }
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "$NinjaBaseUrl/v2/tickets/$TicketId" -Method Put -Headers $ApiHeaders -Body $UpdateBody
+
+# --- 4. ADD THE RESPONSE/NOTE ---
+$NoteBody = @{
+    htmlBody = $RemediationNotes
+    type     = "public_note" 
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "$NinjaBaseUrl/v2/tickets/$TicketId/notes" -Method Post -Headers $ApiHeaders -Body $NoteBody
+
+Write-Output "Ticket $TicketId updated, assigned, and noted."
