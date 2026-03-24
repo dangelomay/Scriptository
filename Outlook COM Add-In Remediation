@@ -1,0 +1,107 @@
+<#
+.SYNOPSIS
+Disables all active Outlook COM Add-ins for the Local Machine AND all User Profiles (even if logged out).
+Outputs a clean report for NinjaOne.
+#>
+
+$ErrorActionPreference = "SilentlyContinue"
+$report = @()
+
+# --- 1. PROCESS MACHINE-LEVEL ADD-INS (HKLM) ---
+$hklmPaths = @(
+    "HKLM:\SOFTWARE\Microsoft\Office\Outlook\Addins",
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\Outlook\Addins"
+)
+
+foreach ($path in $hklmPaths) {
+    if (Test-Path $path) {
+        $addins = Get-ChildItem -Path $path
+        foreach ($addin in $addins) {
+            $name = $addin.PSChildName
+            $friendlyName = (Get-ItemProperty -Path $addin.PSPath -Name "FriendlyName").FriendlyName
+            $loadBehavior = (Get-ItemProperty -Path $addin.PSPath -Name "LoadBehavior").LoadBehavior
+            
+            if ([string]::IsNullOrWhiteSpace($friendlyName)) { $friendlyName = $name }
+
+            if ($loadBehavior -eq 3) {
+                try {
+                    Set-ItemProperty -Path $addin.PSPath -Name "LoadBehavior" -Value 2 -ErrorAction Stop
+                    $status = "[SUCCESS] Disabled"
+                } catch {
+                    $status = "[FAILED] Access Denied"
+                }
+            } else {
+                $status = "[SKIPPED] Already Disabled ($loadBehavior)"
+            }
+
+            $report += [PSCustomObject]@{
+                Scope  = "SYSTEM"
+                Addin  = $friendlyName
+                Status = $status
+            }
+        }
+    }
+}
+
+# --- 2. PROCESS ALL USER PROFILES (NTUSER.DAT) ---
+$userProfiles = Get-ChildItem "C:\Users" -Directory | Where-Object {
+    $_.Name -notin @("Public", "Default", "Default User", "All Users")
+}
+
+foreach ($profile in $userProfiles) {
+    $userName = $profile.Name
+    $ntuserPath = Join-Path $profile.FullName "NTUSER.DAT"
+    
+    if (Test-Path $ntuserPath) {
+        $tempKey = "TempHive_$userName"
+        $regLoadCmd = "reg load `"HKU\$tempKey`" `"$ntuserPath`""
+        Invoke-Expression $regLoadCmd | Out-Null
+        
+        $userAddinPath = "Registry::HKEY_USERS\$tempKey\Software\Microsoft\Office\Outlook\Addins"
+        
+        if (Test-Path $userAddinPath) {
+            $addins = Get-ChildItem -Path $userAddinPath
+            foreach ($addin in $addins) {
+                $name = $addin.PSChildName
+                $friendlyName = (Get-ItemProperty -Path $addin.PSPath -Name "FriendlyName").FriendlyName
+                $loadBehavior = (Get-ItemProperty -Path $addin.PSPath -Name "LoadBehavior").LoadBehavior
+                
+                if ([string]::IsNullOrWhiteSpace($friendlyName)) { $friendlyName = $name }
+
+                if ($loadBehavior -eq 3) {
+                    try {
+                        Set-ItemProperty -Path $addin.PSPath -Name "LoadBehavior" -Value 2 -ErrorAction Stop
+                        $status = "[SUCCESS] Disabled"
+                    } catch {
+                        $status = "[FAILED] Access Denied"
+                    }
+                } else {
+                    $status = "[SKIPPED] Already Disabled ($loadBehavior)"
+                }
+
+                $report += [PSCustomObject]@{
+                    Scope  = "USER ($userName)"
+                    Addin  = $friendlyName
+                    Status = $status
+                }
+            }
+        }
+        
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
+        $regUnloadCmd = "reg unload `"HKU\$tempKey`""
+        Invoke-Expression $regUnloadCmd | Out-Null
+    }
+}
+
+# --- 3. GENERATE NINJAONE REPORT ---
+Write-Output "====================================================="
+Write-Output "      OUTLOOK ADD-IN REMEDIATION REPORT (SYSTEM)     "
+Write-Output "====================================================="
+
+if ($report.Count -gt 0) {
+    $report | Format-Table -AutoSize | Out-String | Write-Output
+    Write-Output "Remediation complete. The user can now launch Outlook."
+} else {
+    Write-Output "No Outlook add-ins found in the system registry or any user profiles."
+}
