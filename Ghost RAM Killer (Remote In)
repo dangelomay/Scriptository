@@ -1,0 +1,51 @@
+<#
+.SYNOPSIS
+Disables the Windows Hypervisor platform and immediately forces a system restart.
+Designed for active remote sessions where the technician is present.
+#>
+
+$ErrorActionPreference = "Stop"
+
+Write-Output "Initiating Hypervisor Kill & Reboot Sequence..."
+
+try {
+    # Check current status
+    $bcdStatus = bcdedit /enum | Select-String "hypervisorlaunchtype"
+    
+    if ($bcdStatus -match "Off") {
+        Write-Output "[STATUS] Hypervisor is already OFF. No reboot necessary."
+        Write-Output "Exiting script."
+        exit 0
+    } 
+    else {
+        Write-Output "[ACTION] Disabling Hypervisor..."
+        
+        # Apply the fix
+        Invoke-Expression "bcdedit /set hypervisorlaunchtype off" | Out-Null
+        
+        # Verify it actually stuck before rebooting
+        $verify = bcdedit /enum | Select-String "hypervisorlaunchtype"
+        
+        if ($verify -match "Off") {
+            Write-Output "[SUCCESS] Hypervisor successfully disabled."
+            Write-Output "Initiating forced system restart in 5 seconds..."
+            Write-Output "3..."
+            Start-Sleep -Seconds 1
+            Write-Output "2..."
+            Start-Sleep -Seconds 1
+            Write-Output "1..."
+            Start-Sleep -Seconds 1
+            
+            # The hammer drops here
+            Restart-Computer -Force
+        } 
+        else {
+            Write-Output "[ERROR] Command executed, but BCD configuration did not update."
+        }
+    }
+} 
+catch {
+    Write-Output "[FAILED] An error occurred: $($_.Exception.Message)"
+    Write-Output "Ensure you are running this from an elevated Administrator prompt."
+    exit 1
+}
