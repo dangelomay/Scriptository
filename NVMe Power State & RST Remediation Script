@@ -1,0 +1,129 @@
+<#
+.SYNOPSIS
+    Evaluates system for Intel RST conflicts against any NVMe drive (or known OEM drives masked by RAID).
+    Adjusts Power Plan settings to prevent dropouts and prepares the system for an onsite AHCI swap.
+#>
+
+# Requires Admin
+if (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Warning "Please run this script as an Administrator."
+    exit
+}
+
+# --- Configuration ---
+$LogPath = "C:\Temp"
+$LogFile = "$LogPath\Storage_Power_Fix_Log.txt"
+
+# Powercfg GUIDs
+$SubGroupPCIe = "501a4d13-42af-4429-9fd1-a8218c268e20"
+$SettingLSPM  = "ee12f906-d277-404b-b6da-e5fa1a55844a" # Link State Power Management
+$SubGroupDisk = "0012ee47-9041-4b5d-9b77-535fba8b1442"
+$SettingAHCI  = "0b2d69d7-a2a1-449c-9680-e91c9f95e0a6" # AHCI Link Power Management
+
+# Known NVMe vendors often masked by RST RAID controllers
+$SuspectVendors = "Hynix|Micron|Samsung|WD|Western|Kioxia|Solidigm|Crucial|Kingston|Intel"
+
+# Ensure log directory exists
+if (!(Test-Path $LogPath)) { New-Item -ItemType Directory -Force -Path $LogPath | Out-Null }
+
+# Helper function for logging
+Function Write-Log {
+    param ([string]$Message)
+    $LogEntry = "[$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss'))] $Message"
+    Write-Host $LogEntry
+    Add-Content -Path $LogFile -Value $LogEntry
+}
+
+# Initialize Log
+Add-Content -Path $LogFile -Value "====================================================="
+Write-Log "Starting Enhanced Storage and Power Plan Assessment..."
+
+# --- 1. Check for NVMe Drives & Intel RST ---
+# Looks for native NVMe OR drives masked as RAID that match known NVMe OEMs
+$TargetDrives = Get-PhysicalDisk | Where-Object {
+    $_.BusType -eq 'NVMe' -or 
+    ($_.BusType -eq 'RAID' -and $_.Model -match $SuspectVendors)
+}
+
+$RSTService = Get-Service -Name "iaStorAC", "iaStorVD" -ErrorAction SilentlyContinue | Where-Object Status -eq "Running"
+
+if ($TargetDrives) { 
+    foreach ($Drive in $TargetDrives) {
+        Write-Log "STATUS: Potential target drive detected - $($Drive.Model) (BusType: $($Drive.BusType))" 
+    }
+} else { 
+    Write-Log "STATUS: No NVMe or suspect OEM drives detected. Proceeding with power checks anyway." 
+}
+
+if ($RSTService) { 
+    Write-Log "STATUS: Intel RST driver is currently ACTIVE." 
+} else { 
+    Write-Log "STATUS: Intel RST driver not detected or not running." 
+}
+
+# --- 2. Get Active Power Plan ---
+$ActivePlanStr = powercfg /getactivescheme
+if ($ActivePlanStr -match "GUID: ([\w-]+)") {
+    $ActivePlanGUID = $Matches[1]
+    Write-Log "Active Power Plan GUID: $ActivePlanGUID"
+} else {
+    Write-Log "ERROR: Could not determine active power plan. Exiting."
+    exit
+}
+
+# --- 3. Check and Set PCIe Link State Power Management ---
+$PCIeQuery = powercfg /q $ActivePlanGUID $SubGroupPCIe $SettingLSPM
+$PCIeNeedsUpdate = $false
+
+if ($PCIeQuery -match "Current AC Power Setting Index: 0x00000000") {
+    Write-Log "CHECK: PCIe Link State Power Management (AC) is already OFF. No action needed."
+} else {
+    Write-Log "ACTION REQUIRED: PCIe Link State Power Management (AC) is enabled. Applying fix..."
+    $PCIeNeedsUpdate = $true
+}
+
+if ($PCIeNeedsUpdate) {
+    powercfg /setacvalueindex $ActivePlanGUID $SubGroupPCIe $SettingLSPM 0
+    powercfg /setdcvalueindex $ActivePlanGUID $SubGroupPCIe $SettingLSPM 0
+    Write-Log "FIX APPLIED: PCIe Link State Power Management disabled."
+}
+
+# --- 4. Check and Set AHCI Link Power Management (HIPM/DIPM) ---
+$AHCIQuery = powercfg /q $ActivePlanGUID $SubGroupDisk $SettingAHCI
+$AHCINeedsUpdate = $false
+
+if ($AHCIQuery -match "Current AC Power Setting Index: 0x00000000") {
+    Write-Log "CHECK: AHCI Link Power Management (AC) is already ACTIVE (0). No action needed."
+} else {
+    Write-Log "ACTION REQUIRED: AHCI Link Power Management (AC) is not Active. Applying fix..."
+    $AHCINeedsUpdate = $true
+}
+
+if ($AHCINeedsUpdate) {
+    powercfg /setacvalueindex $ActivePlanGUID $SubGroupDisk $SettingAHCI 0
+    powercfg /setdcvalueindex $ActivePlanGUID $SubGroupDisk $SettingAHCI 0
+    Write-Log "FIX APPLIED: AHCI Link Power Management set to Active."
+}
+
+# Apply any powercfg changes
+if ($PCIeNeedsUpdate -or $AHCINeedsUpdate) {
+    powercfg /setactive $ActivePlanGUID
+    Write-Log "Power settings refreshed and saved."
+}
+
+# --- 5. Prepare the Safety Net (Optional) ---
+# Uncomment the line below to stage the machine for Safe Mode on the next boot.
+# bcdedit /set "{current}" safeboot minimal
+
+Write-Log "====================================================="
+Write-Log "NEXT STEP FOR TECHNICIAN (RST to AHCI Swap):"
+Write-Log "1. Confirm power settings in this log are applied."
+Write-Log "2. Open an elevated command prompt and run: bcdedit /set {current} safeboot minimal"
+Write-Log "3. Restart the computer and enter the BIOS/UEFI."
+Write-Log "4. Change the SATA/Storage Controller Mode from RAID/RST to AHCI. Save and Exit."
+Write-Log "5. Windows will now safely boot into Safe Mode and install the native AHCI driver."
+Write-Log "6. Open an elevated command prompt and run: bcdedit /deletevalue {current} safeboot"
+Write-Log "7. Restart the computer normally."
+Write-Log "====================================================="
+
+Write-Log "Script execution complete. You can view this log file at $LogFile"
