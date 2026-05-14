@@ -1,0 +1,46 @@
+<#
+.SYNOPSIS
+    Root-Level Deep Scan - Maps the exact storage distribution of the C:\ Drive.
+#>
+
+if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Warning "Access Denied. Right-click PowerShell and 'Run as Administrator'."
+    break
+}
+
+Clear-Host
+Write-Host "Initiating Root Drive Deep Scan. This will take several minutes..." -ForegroundColor Cyan
+$ErrorActionPreference = "SilentlyContinue"
+
+# Get all items in the root of C:\ (including Hidden and System files)
+$rootItems = Get-ChildItem -Path "C:\" -Force
+
+$storageData = @()
+
+foreach ($item in $rootItems) {
+    # We skip System Volume Information here because PowerShell will block access to it even as Admin.
+    # We will check it manually in the next step.
+    if ($item.Name -eq "System Volume Information") { continue }
+
+    Write-Host "Calculating size of C:\$($item.Name)... " -NoNewline
+
+    if ($item.PSIsContainer) {
+        $sizeBytes = (Get-ChildItem -Path $item.FullName -Recurse -Force | Measure-Object -Property Length -Sum).Sum
+    } else {
+        $sizeBytes = $item.Length
+    }
+
+    $sizeGB = [math]::Round(($sizeBytes / 1GB), 2)
+    Write-Host "$sizeGB GB" -ForegroundColor Green
+
+    $storageData += [PSCustomObject]@{
+        Name       = $item.Name
+        Type       = if ($item.PSIsContainer) { "Folder" } else { "File" }
+        "Size(GB)" = $sizeGB
+    }
+}
+
+Write-Host "`n---------------------------------------------------"
+Write-Host "C:\ DRIVE STORAGE DISTRIBUTION" -ForegroundColor Red
+Write-Host "---------------------------------------------------"
+$storageData | Sort-Object "Size(GB)" -Descending | Format-Table -AutoSize
