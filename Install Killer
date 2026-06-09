@@ -1,0 +1,49 @@
+# Requires -RunAsAdministrator
+<#
+.SYNOPSIS
+    Finds and terminates active installer processes.
+.DESCRIPTION
+    This script searches for running processes commonly associated with software 
+    installations and terminates them to clear stuck installs.
+#>
+
+# List of common installer process names (without .exe extension)
+$InstallerNames = @(
+    "msiexec",
+    "setup",
+    "install",
+    "issetup",      # InstallShield
+    "setup.tmp",
+    "dism",         # Deployment Image Servicing and Management
+    "TiWorker",     # Windows Update worker
+    "TrustedInstaller"
+)
+
+Write-Host "Searching for active installer processes..." -ForegroundColor Cyan
+
+$FoundAny = $false
+
+foreach ($Name in $InstallerNames) {
+    # Get all matching processes
+    $Processes = Get-Process -Name $Name -ErrorAction SilentlyContinue
+
+    if ($Processes) {
+        $FoundAny = $true
+        foreach ($Process in $Processes) {
+            try {
+                Write-Host "Found installer: $($Process.Name) (PID: $($Process.Id))" -ForegroundColor Yellow
+                
+                # Stop the process securely
+                Stop-Process -Id $Process.Id -Force -ErrorAction Stop
+                Write-Host "Successfully terminated PID $($Process.Id)." -ForegroundColor Green
+            }
+            catch {
+                Write-Warning "Failed to terminate PID $($Process.Id). Reason: $_"
+            }
+        }
+    }
+}
+
+if (-not $FoundAny) {
+    Write-Host "No active installer processes were found." -ForegroundColor Green
+}
