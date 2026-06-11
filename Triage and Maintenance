@@ -1,6 +1,6 @@
 # ==============================================================================
-# Elite MSP Autonomous Proactive Triage & Maintenance (NinjaOne v3)
-# Includes OmniSync, VSS Purge, RST Hardware Audit, and Telemetry/Xbox Eradication
+# Elite MSP Autonomous Proactive Triage & Maintenance (NinjaOne v4)
+# Includes OmniSync, VSS Purge, RST Hardware Audit, Telemetry Kill, and WUA Cache Reset
 # ==============================================================================
 
 $reportLog = @()
@@ -203,7 +203,46 @@ if ($killedInstallers -gt 0) {
 }
 
 # ---------------------------------------------------------
-# Phase 8: Application Updates & Scheduling
+# Phase 8: Windows Update Cache Remediation (Failed Patches)
+# ---------------------------------------------------------
+try {
+    # Check the internal Windows Update API for recent failures
+    $UpdateSession = New-Object -ComObject Microsoft.Update.Session
+    $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
+    $HistoryCount = $UpdateSearcher.GetTotalHistoryCount()
+    
+    if ($HistoryCount -gt 0) {
+        # Scan the last 15 update events (ResultCode 4 = Failed)
+        $CheckCount = [math]::Min($HistoryCount, 15)
+        $History = $UpdateSearcher.QueryHistory(0, $CheckCount)
+        $FailedUpdates = $History | Where-Object { $_.ResultCode -eq 4 -or $_.ResultCode -eq 3 }
+        
+        if ($FailedUpdates) {
+            $reportLog += "PATCHING: [ALERT] Detected $($FailedUpdates.Count) recently failed Windows Updates. Cache is likely corrupted."
+            $reportLog += "PATCHING: [REMEDIATING] Force-rebuilding Windows Update components (SoftwareDistribution)..."
+            
+            # Stop the core update services
+            Stop-Service -Name wuauserv, bits, cryptsvc, msiserver -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 3
+            
+            # Nuke the corrupted caches
+            Remove-Item -Path "C:\Windows\SoftwareDistribution\*" -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path "C:\Windows\System32\catroot2\*" -Recurse -Force -ErrorAction SilentlyContinue
+            
+            # Restart the services
+            Start-Service -Name wuauserv, bits, cryptsvc, msiserver -ErrorAction SilentlyContinue
+            
+            $reportLog += "PATCHING: [REMEDIATED] Windows Update cache purged. NinjaOne will re-seed patches cleanly on next sync."
+        } else {
+            $reportLog += "PATCHING: [OK] No recent Windows Update installation failures detected."
+        }
+    }
+} catch {
+    $reportLog += "PATCHING: [WARNING] Unable to query Windows Update API. Skipping cache audit."
+}
+
+# ---------------------------------------------------------
+# Phase 9: Third-Party Application Updates & Scheduling
 # ---------------------------------------------------------
 $wingetArgs = "upgrade --all --silent --accept-package-agreements --accept-source-agreements"
 
@@ -213,18 +252,18 @@ if (-not $userIsLoggedOn) {
         if ($wingetPath) {
             $updateOut = & $wingetPath $wingetArgs | Out-String
             if ($updateOut -match "No installed packages have available upgrades" -or $updateOut -match "No available upgrades") {
-                $reportLog += "UPDATES:  [OK] All third-party applications are already up to date."
+                $reportLog += "APPS:     [OK] All third-party applications are already up to date."
             } else {
-                $reportLog += "UPDATES:  [REMEDIATED] Winget successfully installed pending upgrades in the background."
+                $reportLog += "APPS:     [REMEDIATED] Winget successfully installed pending upgrades in the background."
             }
         } else {
-            $reportLog += "UPDATES:  [WARNING] Winget executable not found."
+            $reportLog += "APPS:     [WARNING] Winget executable not found."
         }
     } catch {
-         $reportLog += "UPDATES:  [ERROR] Winget update execution failed."
+         $reportLog += "APPS:     [ERROR] Winget update execution failed."
     }
 } else {
-    $reportLog += "UPDATES:  [STANDBY] User is active. Application updates and reboot are armed for 10:00 PM tonight."
+    $reportLog += "APPS:     [STANDBY] User is active. Application updates and reboot are armed for 10:00 PM tonight."
     
     $payloadPath = "C:\Windows\Temp\NightlyUpdatePayload.ps1"
     $payloadContent = @"
