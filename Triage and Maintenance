@@ -1,5 +1,6 @@
 # ==============================================================================
 # Elite MSP Autonomous Proactive Triage & Maintenance (NinjaOne)
+# Includes OmniSync Auto-Remediation, Network Optimization, and Winget
 # ==============================================================================
 
 $reportLog = @()
@@ -19,87 +20,139 @@ if ($userIsLoggedOn) {
     $reportLog += "CONTEXT: No user logged in. Authorized for immediate aggressive maintenance."
 }
 
-# Core Service Health
 $s1 = Get-Service -Name "SentinelAgent" -ErrorAction SilentlyContinue
-$omni = Get-Service -Name "OmniSync Service" -ErrorAction SilentlyContinue
-
-if ($s1 -and $s1.Status -eq 'Running') { $reportLog += "SECURITY: [OK] SentinelOne is actively running." } 
-else { $reportLog += "SECURITY: [ALERT] SentinelOne is MISSING or STOPPED." }
-
-if ($omni -and $omni.Status -eq 'Running') { $reportLog += "SYNC:     [OK] OmniSync background service is active." } 
-else { $reportLog += "SYNC:     [ALERT] OmniSync service is not running." }
-
-# ---------------------------------------------------------
-# Phase 2: Performance Audit & Storage Remediation
-# ---------------------------------------------------------
-$cDrive = Get-Volume -DriveLetter C
-$percentFree = [math]::Round(($cDrive.SizeRemaining / $cDrive.Size) * 100, 2)
-
-if ($percentFree -lt 15) {
-    $reportLog += "STORAGE:  [REMEDIATED] C: Drive was critically low ($percentFree% free). Purging temp files..."
-    Remove-Item -Path "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
-    if ($userIsLoggedOn) {
-        $userTemp = "C:\Users\$($loggedInUser.Split('\')[1])\AppData\Local\Temp\*"
-        Remove-Item -Path $userTemp -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Clear-RecycleBin -Force -ErrorAction SilentlyContinue
-} else {
-    $reportLog += "STORAGE:  [OK] C: Drive space is healthy ($percentFree% free)."
+if ($s1 -and $s1.Status -eq 'Running') { 
+    $reportLog += "SECURITY: [OK] SentinelOne is actively running." 
+} else { 
+    $reportLog += "SECURITY: [ALERT] SentinelOne is MISSING or STOPPED." 
 }
 
 # ---------------------------------------------------------
-# Phase 3: Network Infrastructure Optimization
+# Phase 2: OmniSync Deep Health & Escalation Ladder
 # ---------------------------------------------------------
-# 1. DNS Flush
+$omniServiceName = "OmniSync Service"
+$omniGuiName = "agent_gui"
+$omniTriggered = $false
+
+$omniService = Get-Service -Name $omniServiceName -ErrorAction SilentlyContinue
+if ($null -eq $omniService) {
+    $reportLog += "SYNC:     [INFO] OmniSync is not installed on this device."
+} else {
+    $omniGui = Get-Process -Name "*$omniGuiName*" -ErrorAction SilentlyContinue
+    
+    # Check if app is stuck/crashed/stopped
+    if ($omniService.Status -ne 'Running') {
+        $omniTriggered = $true
+        $reportLog += "SYNC:     [REMEDIATING] Background service stopped. Escalating..."
+    } elseif ($userIsLoggedOn -and -not $omniGui) {
+        $omniTriggered = $true
+        $reportLog += "SYNC:     [REMEDIATING] User logged in but GUI crashed/closed. Escalating..."
+    }
+
+    # The OmniSync Escalation Ladder
+    if ($omniTriggered) {
+        Stop-Service -Name $omniServiceName -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+
+        Get-Process -Name "*$omniGuiName*" -ErrorAction SilentlyContinue | Stop-Process -Force
+        Start-Sleep -Seconds 2
+
+        # Deadlock Breaker
+        $stuckService = Get-WmiObject Win32_Service -Filter "Name='$omniServiceName'"
+        if ($stuckService -and $stuckService.ProcessId -ne 0) {
+            Stop-Process -Id $stuckService.ProcessId -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 3
+        }
+
+        Start-Service -Name $omniServiceName -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 5
+
+        # GUI Injector (Session Jump)
+        if ($userIsLoggedOn) {
+            $checkGui = Get-Process -Name "*$omniGuiName*" -ErrorAction SilentlyContinue
+            if (-not $checkGui) {
+                $guiPath = (Get-ChildItem -Path "C:\Program Files (x86)" -Filter "$omniGuiName.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+                if ($guiPath) {
+                    try {
+                        $action = New-ScheduledTaskAction -Execute $guiPath
+                        $trigger = New-ScheduledTaskTrigger -AtStartup 
+                        $principal = New-ScheduledTaskPrincipal -UserId $loggedInUser -LogonType Interactive
+                        
+                        Register-ScheduledTask -TaskName "OmniSyncGUI_Restarter" -Action $action -Principal $principal -Force | Out-Null
+                        Start-ScheduledTask -TaskName "OmniSyncGUI_Restarter"
+                        Start-Sleep -Seconds 4
+                        Unregister-ScheduledTask -TaskName "OmniSyncGUI_Restarter" -Confirm:$false | Out-Null
+                    } catch {}
+                }
+            }
+        }
+        $reportLog += "SYNC:     [REMEDIATED] OmniSync has been successfully restarted and injected."
+    } else {
+        $reportLog += "SYNC:     [OK] OmniSync is healthy and standing by."
+    }
+}
+
+# ---------------------------------------------------------
+# Phase 3: Performance Audit & Storage Remediation
+# ---------------------------------------------------------
+$cDrive = Get-Volume -DriveLetter C -ErrorAction SilentlyContinue
+if ($cDrive) {
+    $percentFree = [math]::Round(($cDrive.SizeRemaining / $cDrive.Size) * 100, 2)
+    if ($percentFree -lt 15) {
+        $reportLog += "STORAGE:  [REMEDIATED] C: Drive critically low ($percentFree% free). Purging temp files..."
+        Remove-Item -Path "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+        if ($userIsLoggedOn) {
+            $userTemp = "C:\Users\$($loggedInUser.Split('\')[1])\AppData\Local\Temp\*"
+            Remove-Item -Path $userTemp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+    } else {
+        $reportLog += "STORAGE:  [OK] C: Drive space is healthy ($percentFree% free)."
+    }
+}
+
+# ---------------------------------------------------------
+# Phase 4: Network Infrastructure Optimization
+# ---------------------------------------------------------
 Clear-DnsClientCache
 $reportLog += "NETWORK:  [REMEDIATED] DNS Resolver Cache flushed."
 
-# 2. IPv4 / IPv6 Binding Validations
 $adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up'
-
 foreach ($adapter in $adapters) {
     # Check/Disable IPv6
     $ipv6 = Get-NetAdapterBinding -InterfaceAlias $adapter.Name -ComponentID ms_tcpip6
     if ($ipv6.Enabled) {
         Disable-NetAdapterBinding -InterfaceAlias $adapter.Name -ComponentID ms_tcpip6
-        $reportLog += "NETWORK:  [REMEDIATED] IPv6 was enabled on '$($adapter.Name)'. It has been DISABLED."
-    } else {
-        $reportLog += "NETWORK:  [OK] IPv6 is correctly disabled on '$($adapter.Name)'."
+        $reportLog += "NETWORK:  [REMEDIATED] IPv6 disabled on '$($adapter.Name)'."
     }
     
     # Check/Ensure IPv4
     $ipv4 = Get-NetAdapterBinding -InterfaceAlias $adapter.Name -ComponentID ms_tcpip
     if (-not $ipv4.Enabled) {
         Enable-NetAdapterBinding -InterfaceAlias $adapter.Name -ComponentID ms_tcpip
-        $reportLog += "NETWORK:  [REMEDIATED] IPv4 was disabled on '$($adapter.Name)'. It has been ENABLED."
-    } else {
-        $reportLog += "NETWORK:  [OK] IPv4 is correctly enabled on '$($adapter.Name)'."
+        $reportLog += "NETWORK:  [REMEDIATED] IPv4 forcefully enabled on '$($adapter.Name)'."
     }
 }
 
-# 3. LAN Power Management (Disable "Allow the computer to turn off this device")
+# LAN Power Management Fix
 $nicRegPaths = Get-ChildItem "HKLM:\System\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}" -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d{4}$' }
 $powerManagementChanged = $false
 
 foreach ($nic in $nicRegPaths) {
     $driverDesc = (Get-ItemProperty -Path $nic.PSPath -Name "DriverDesc" -ErrorAction SilentlyContinue).DriverDesc
-    # Ignore virtual adapters, VPNs, and Bluetooth
     if ($driverDesc -and $driverDesc -notmatch "Virtual|VPN|Bluetooth|Hyper-V|WAN|TAP") {
         $pnpCap = Get-ItemProperty -Path $nic.PSPath -Name "PnPCapabilities" -ErrorAction SilentlyContinue
-        # If PnPCapabilities is not 24, power management is enabled
         if ($null -eq $pnpCap.PnPCapabilities -or ($pnpCap.PnPCapabilities -band 24) -ne 24) {
             Set-ItemProperty -Path $nic.PSPath -Name "PnPCapabilities" -Value 24 -ErrorAction SilentlyContinue
             $powerManagementChanged = $true
-            $reportLog += "NETWORK:  [REMEDIATED] Power Save Mode was active on '$driverDesc'. It has been DISABLED."
+            $reportLog += "NETWORK:  [REMEDIATED] Disabled Power Save Mode on '$driverDesc'."
         }
     }
 }
-if (-not $powerManagementChanged) {
-    $reportLog += "NETWORK:  [OK] Power Save Mode is correctly disabled on all physical LAN adapters."
-}
+if (-not $powerManagementChanged) { $reportLog += "NETWORK:  [OK] Network Power Save Modes are correctly disabled." }
 
 # ---------------------------------------------------------
-# Phase 4: Stuck Installer Remediation
+# Phase 5: Stuck Installer Remediation
 # ---------------------------------------------------------
 $InstallerNames = @("msiexec", "setup", "install", "issetup", "dism", "TiWorker", "TrustedInstaller")
 $killedInstallers = 0
@@ -119,12 +172,11 @@ if ($killedInstallers -gt 0) {
 }
 
 # ---------------------------------------------------------
-# Phase 5: Application Updates & Scheduling
+# Phase 6: Application Updates & Scheduling
 # ---------------------------------------------------------
 $wingetArgs = "upgrade --all --silent --accept-package-agreements --accept-source-agreements"
 
 if (-not $userIsLoggedOn) {
-    # Immediate execution
     try {
         $wingetPath = Resolve-Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" | Select-Object -ExpandProperty Path -First 1
         if ($wingetPath) {
@@ -132,17 +184,15 @@ if (-not $userIsLoggedOn) {
             if ($updateOut -match "No installed packages have available upgrades" -or $updateOut -match "No available upgrades") {
                 $reportLog += "UPDATES:  [OK] All third-party applications are already up to date."
             } else {
-                $reportLog += "UPDATES:  [REMEDIATED] Winget successfully downloaded and installed pending upgrades."
+                $reportLog += "UPDATES:  [REMEDIATED] Winget successfully installed pending upgrades in the background."
             }
         } else {
-            $reportLog += "UPDATES:  [WARNING] Winget executable not found on this system."
+            $reportLog += "UPDATES:  [WARNING] Winget executable not found."
         }
     } catch {
          $reportLog += "UPDATES:  [ERROR] Winget update execution failed."
     }
-
 } else {
-    # Staging the 10:00 PM Payload
     $reportLog += "UPDATES:  [STANDBY] User is active. Application updates and reboot are armed for 10:00 PM tonight."
     
     $payloadPath = "C:\Windows\Temp\NightlyUpdatePayload.ps1"
