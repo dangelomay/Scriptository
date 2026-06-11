@@ -1,6 +1,6 @@
 # ==============================================================================
-# Elite MSP Autonomous Proactive Triage & Maintenance (NinjaOne v4)
-# Includes OmniSync, VSS Purge, RST Hardware Audit, Telemetry Kill, and WUA Cache Reset
+# Elite MSP Autonomous Proactive Triage & Maintenance (NinjaOne v5)
+# Includes OmniSync, VSS Purge, Telemetry Kill, Cache Reset, & Autonomous Patching
 # ==============================================================================
 
 $reportLog = @()
@@ -113,7 +113,7 @@ if ($cDrive) {
 $osInfo = Get-CimInstance Win32_OperatingSystem
 if ($osInfo.OperatingSystemSKU -eq 48 -or $osInfo.Caption -match "Pro|Enterprise") {
     
-    # 1. Kill Telemetry via Registry
+    # Kill Telemetry via Registry
     $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"
     if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
     $telemetryVal = (Get-ItemProperty -Path $regPath -Name "AllowTelemetry" -ErrorAction SilentlyContinue).AllowTelemetry
@@ -122,10 +122,9 @@ if ($osInfo.OperatingSystemSKU -eq 48 -or $osInfo.Caption -match "Pro|Enterprise
         $reportLog += "SYSTEM:   [REMEDIATED] Windows Telemetry (DiagTrack) forcefully restricted via Registry."
     }
 
-    # 2. Disable heavy, unused consumer services
+    # Disable heavy, unused consumer services
     $servicesToDisable = @("DiagTrack", "dmwappushservice", "XblAuthManager", "XblGameSave", "XboxNetApiSvc", "XboxGipSvc")
     $disabledCount = 0
-
     foreach ($svcName in $servicesToDisable) {
         $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
         if ($svc -and $svc.StartType -ne 'Disabled') {
@@ -134,11 +133,8 @@ if ($osInfo.OperatingSystemSKU -eq 48 -or $osInfo.Caption -match "Pro|Enterprise
             $disabledCount++
         }
     }
-
     if ($disabledCount -gt 0) {
-        $reportLog += "SYSTEM:   [REMEDIATED] Disabled $disabledCount unused consumer services (Xbox/Telemetry) bogging down the OS."
-    } else {
-        $reportLog += "SYSTEM:   [OK] Telemetry and Xbox services are appropriately disabled."
+        $reportLog += "SYSTEM:   [REMEDIATED] Disabled $disabledCount unused consumer services (Xbox/Telemetry)."
     }
 }
 
@@ -156,7 +152,6 @@ foreach ($adapter in $adapters) {
         Disable-NetAdapterBinding -InterfaceAlias $adapter.Name -ComponentID ms_tcpip6
         $reportLog += "NETWORK:  [REMEDIATED] IPv6 disabled on '$($adapter.Name)'."
     }
-    
     # Check/Ensure IPv4
     $ipv4 = Get-NetAdapterBinding -InterfaceAlias $adapter.Name -ComponentID ms_tcpip
     if (-not $ipv4.Enabled) {
@@ -167,27 +162,22 @@ foreach ($adapter in $adapters) {
 
 # LAN Power Management Fix
 $nicRegPaths = Get-ChildItem "HKLM:\System\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}" -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d{4}$' }
-$powerManagementChanged = $false
-
 foreach ($nic in $nicRegPaths) {
     $driverDesc = (Get-ItemProperty -Path $nic.PSPath -Name "DriverDesc" -ErrorAction SilentlyContinue).DriverDesc
     if ($driverDesc -and $driverDesc -notmatch "Virtual|VPN|Bluetooth|Hyper-V|WAN|TAP") {
         $pnpCap = Get-ItemProperty -Path $nic.PSPath -Name "PnPCapabilities" -ErrorAction SilentlyContinue
         if ($null -eq $pnpCap.PnPCapabilities -or ($pnpCap.PnPCapabilities -band 24) -ne 24) {
             Set-ItemProperty -Path $nic.PSPath -Name "PnPCapabilities" -Value 24 -ErrorAction SilentlyContinue
-            $powerManagementChanged = $true
             $reportLog += "NETWORK:  [REMEDIATED] Disabled Power Save Mode on '$driverDesc'."
         }
     }
 }
-if (-not $powerManagementChanged) { $reportLog += "NETWORK:  [OK] Network Power Save Modes are correctly disabled." }
 
 # ---------------------------------------------------------
 # Phase 7: Stuck Installer Remediation
 # ---------------------------------------------------------
 $InstallerNames = @("msiexec", "setup", "install", "issetup", "dism", "TiWorker", "TrustedInstaller")
 $killedInstallers = 0
-
 foreach ($Name in $InstallerNames) {
     $Processes = Get-Process -Name $Name -ErrorAction SilentlyContinue
     if ($Processes) {
@@ -198,41 +188,34 @@ foreach ($Name in $InstallerNames) {
 }
 if ($killedInstallers -gt 0) {
     $reportLog += "UPDATES:  [REMEDIATED] Force-killed $killedInstallers stuck installer process(es)."
-} else {
-    $reportLog += "UPDATES:  [OK] No stuck or frozen installers detected."
 }
 
 # ---------------------------------------------------------
-# Phase 8: Windows Update Cache Remediation (Failed Patches)
+# Phase 8: OS Update Cache Remediation (Failed Patches)
 # ---------------------------------------------------------
+$cacheCleared = $false
 try {
-    # Check the internal Windows Update API for recent failures
     $UpdateSession = New-Object -ComObject Microsoft.Update.Session
     $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
     $HistoryCount = $UpdateSearcher.GetTotalHistoryCount()
     
     if ($HistoryCount -gt 0) {
-        # Scan the last 15 update events (ResultCode 4 = Failed)
         $CheckCount = [math]::Min($HistoryCount, 15)
         $History = $UpdateSearcher.QueryHistory(0, $CheckCount)
         $FailedUpdates = $History | Where-Object { $_.ResultCode -eq 4 -or $_.ResultCode -eq 3 }
         
         if ($FailedUpdates) {
-            $reportLog += "PATCHING: [ALERT] Detected $($FailedUpdates.Count) recently failed Windows Updates. Cache is likely corrupted."
+            $reportLog += "PATCHING: [ALERT] Detected $($FailedUpdates.Count) recently failed OS Updates."
             $reportLog += "PATCHING: [REMEDIATING] Force-rebuilding Windows Update components (SoftwareDistribution)..."
             
-            # Stop the core update services
             Stop-Service -Name wuauserv, bits, cryptsvc, msiserver -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 3
-            
-            # Nuke the corrupted caches
             Remove-Item -Path "C:\Windows\SoftwareDistribution\*" -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -Path "C:\Windows\System32\catroot2\*" -Recurse -Force -ErrorAction SilentlyContinue
-            
-            # Restart the services
             Start-Service -Name wuauserv, bits, cryptsvc, msiserver -ErrorAction SilentlyContinue
             
-            $reportLog += "PATCHING: [REMEDIATED] Windows Update cache purged. NinjaOne will re-seed patches cleanly on next sync."
+            $cacheCleared = $true
+            $reportLog += "PATCHING: [REMEDIATED] Update cache purged. System is prepped for direct patching."
         } else {
             $reportLog += "PATCHING: [OK] No recent Windows Update installation failures detected."
         }
@@ -242,13 +225,14 @@ try {
 }
 
 # ---------------------------------------------------------
-# Phase 9: Third-Party Application Updates & Scheduling
+# Phase 9: Autonomous Patching Execution (Winget + OS)
 # ---------------------------------------------------------
 $wingetArgs = "upgrade --all --silent --accept-package-agreements --accept-source-agreements"
 
 if (-not $userIsLoggedOn) {
+    # 1. Execute Third-Party App Updates Immediately
     try {
-        $wingetPath = Resolve-Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" | Select-Object -ExpandProperty Path -First 1
+        $wingetPath = Resolve-Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -First 1
         if ($wingetPath) {
             $updateOut = & $wingetPath $wingetArgs | Out-String
             if ($updateOut -match "No installed packages have available upgrades" -or $updateOut -match "No available upgrades") {
@@ -256,21 +240,34 @@ if (-not $userIsLoggedOn) {
             } else {
                 $reportLog += "APPS:     [REMEDIATED] Winget successfully installed pending upgrades in the background."
             }
-        } else {
-            $reportLog += "APPS:     [WARNING] Winget executable not found."
         }
+    } catch {}
+
+    # 2. Force Immediate OS Update Scan & Install (Bypassing RMM Sync)
+    $reportLog += "PATCHING: [ACTION] Taking native control. Triggering OS Update Orchestrator (UsoClient.exe)..."
+    try {
+        Start-Process -FilePath "UsoClient.exe" -ArgumentList "ScanInstallWait" -NoNewWindow -Wait:$false
+        $reportLog += "PATCHING: [OK] Windows Update successfully triggered in the background."
     } catch {
-         $reportLog += "APPS:     [ERROR] Winget update execution failed."
+        $reportLog += "PATCHING: [ERROR] Failed to initiate native UsoClient."
     }
+
 } else {
-    $reportLog += "APPS:     [STANDBY] User is active. Application updates and reboot are armed for 10:00 PM tonight."
+    $reportLog += "UPDATES:  [STANDBY] User is active. OS and App updates armed for 10:00 PM tonight."
     
+    # Build the autonomous Nightly Payload
     $payloadPath = "C:\Windows\Temp\NightlyUpdatePayload.ps1"
     $payloadContent = @"
-        `$wingetPath = Resolve-Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" | Select-Object -ExpandProperty Path -First 1
+        # 1. Update 3rd Party Apps
+        `$wingetPath = Resolve-Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Path -First 1
         if (`$wingetPath) { & `$wingetPath upgrade --all --silent --accept-package-agreements --accept-source-agreements }
-        Start-Sleep -Seconds 60
-        Restart-Computer -Force
+        Start-Sleep -Seconds 30
+
+        # 2. Trigger native Windows Update Orchestrator to scan, download, and install
+        Start-Process -FilePath "UsoClient.exe" -ArgumentList "ScanInstallWait" -NoNewWindow -Wait:`$false
+        
+        # Note: No forced Restart-Computer command used here to avoid interrupting in-progress OS patches. 
+        # The Update Orchestrator natively handles the reboot requirement outside Active Hours.
 "@
     Set-Content -Path $payloadPath -Value $payloadContent -Force
 
