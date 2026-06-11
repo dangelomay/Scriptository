@@ -1,6 +1,6 @@
 # ==============================================================================
-# Elite MSP Autonomous Proactive Triage & Maintenance (NinjaOne)
-# Includes OmniSync Auto-Remediation, Network Optimization, and Winget
+# Elite MSP Autonomous Proactive Triage & Maintenance (NinjaOne v3)
+# Includes OmniSync, VSS Purge, RST Hardware Audit, and Telemetry/Xbox Eradication
 # ==============================================================================
 
 $reportLog = @()
@@ -15,9 +15,9 @@ $loggedInUser = (Get-WmiObject -Class Win32_ComputerSystem).UserName
 $userIsLoggedOn = -not [string]::IsNullOrWhiteSpace($loggedInUser)
 
 if ($userIsLoggedOn) {
-    $reportLog += "CONTEXT: User [$loggedInUser] is active. Disruptive tasks scheduled for 10:00 PM."
+    $reportLog += "CONTEXT:  User [$loggedInUser] is active. Disruptive tasks scheduled for 10:00 PM."
 } else {
-    $reportLog += "CONTEXT: No user logged in. Authorized for immediate aggressive maintenance."
+    $reportLog += "CONTEXT:  No user logged in. Authorized for immediate aggressive maintenance."
 }
 
 $s1 = Get-Service -Name "SentinelAgent" -ErrorAction SilentlyContinue
@@ -28,91 +28,122 @@ if ($s1 -and $s1.Status -eq 'Running') {
 }
 
 # ---------------------------------------------------------
-# Phase 2: OmniSync Deep Health & Escalation Ladder
+# Phase 2: OmniSync Deep Health & Escalation
 # ---------------------------------------------------------
 $omniServiceName = "OmniSync Service"
 $omniGuiName = "agent_gui"
-$omniTriggered = $false
 
 $omniService = Get-Service -Name $omniServiceName -ErrorAction SilentlyContinue
 if ($null -eq $omniService) {
     $reportLog += "SYNC:     [INFO] OmniSync is not installed on this device."
 } else {
     $omniGui = Get-Process -Name "*$omniGuiName*" -ErrorAction SilentlyContinue
-    
-    # Check if app is stuck/crashed/stopped
-    if ($omniService.Status -ne 'Running') {
-        $omniTriggered = $true
-        $reportLog += "SYNC:     [REMEDIATING] Background service stopped. Escalating..."
-    } elseif ($userIsLoggedOn -and -not $omniGui) {
-        $omniTriggered = $true
-        $reportLog += "SYNC:     [REMEDIATING] User logged in but GUI crashed/closed. Escalating..."
-    }
-
-    # The OmniSync Escalation Ladder
-    if ($omniTriggered) {
+    if ($omniService.Status -ne 'Running' -or ($userIsLoggedOn -and -not $omniGui)) {
+        $reportLog += "SYNC:     [REMEDIATING] OmniSync crash detected. Executing Escalation Ladder..."
         Stop-Service -Name $omniServiceName -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 3
-
         Get-Process -Name "*$omniGuiName*" -ErrorAction SilentlyContinue | Stop-Process -Force
-        Start-Sleep -Seconds 2
-
+        
         # Deadlock Breaker
         $stuckService = Get-WmiObject Win32_Service -Filter "Name='$omniServiceName'"
         if ($stuckService -and $stuckService.ProcessId -ne 0) {
             Stop-Process -Id $stuckService.ProcessId -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 3
         }
-
+        
         Start-Service -Name $omniServiceName -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 5
 
-        # GUI Injector (Session Jump)
-        if ($userIsLoggedOn) {
-            $checkGui = Get-Process -Name "*$omniGuiName*" -ErrorAction SilentlyContinue
-            if (-not $checkGui) {
-                $guiPath = (Get-ChildItem -Path "C:\Program Files (x86)" -Filter "$omniGuiName.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
-                if ($guiPath) {
-                    try {
-                        $action = New-ScheduledTaskAction -Execute $guiPath
-                        $trigger = New-ScheduledTaskTrigger -AtStartup 
-                        $principal = New-ScheduledTaskPrincipal -UserId $loggedInUser -LogonType Interactive
-                        
-                        Register-ScheduledTask -TaskName "OmniSyncGUI_Restarter" -Action $action -Principal $principal -Force | Out-Null
-                        Start-ScheduledTask -TaskName "OmniSyncGUI_Restarter"
-                        Start-Sleep -Seconds 4
-                        Unregister-ScheduledTask -TaskName "OmniSyncGUI_Restarter" -Confirm:$false | Out-Null
-                    } catch {}
-                }
+        # Session Jump (GUI Injector)
+        if ($userIsLoggedOn -and -not (Get-Process -Name "*$omniGuiName*" -ErrorAction SilentlyContinue)) {
+            $guiPath = (Get-ChildItem -Path "C:\Program Files (x86)" -Filter "$omniGuiName.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+            if ($guiPath) {
+                $action = New-ScheduledTaskAction -Execute $guiPath
+                $trigger = New-ScheduledTaskTrigger -AtStartup 
+                $principal = New-ScheduledTaskPrincipal -UserId $loggedInUser -LogonType Interactive
+                Register-ScheduledTask -TaskName "OmniSyncGUI_Restarter" -Action $action -Principal $principal -Force | Out-Null
+                Start-ScheduledTask -TaskName "OmniSyncGUI_Restarter"
+                Start-Sleep -Seconds 4
+                Unregister-ScheduledTask -TaskName "OmniSyncGUI_Restarter" -Confirm:$false | Out-Null
             }
         }
-        $reportLog += "SYNC:     [REMEDIATED] OmniSync has been successfully restarted and injected."
+        $reportLog += "SYNC:     [REMEDIATED] OmniSync successfully restarted and injected to desktop."
     } else {
         $reportLog += "SYNC:     [OK] OmniSync is healthy and standing by."
     }
 }
 
 # ---------------------------------------------------------
-# Phase 3: Performance Audit & Storage Remediation
+# Phase 3: Hardware Audit (The 100% Disk Spike Check)
+# ---------------------------------------------------------
+$storageController = Get-WmiObject Win32_SCSIController | Where-Object { $_.DriverName -match "iaStor" }
+if ($storageController) {
+    $reportLog += "HARDWARE: [WARNING] Intel RST Controller detected ($($storageController.Name)). Potential risk for 100% Active Disk spikes."
+} else {
+    $reportLog += "HARDWARE: [OK] Standard AHCI/NVMe storage controller in use."
+}
+
+# ---------------------------------------------------------
+# Phase 4: Performance Audit, Storage & VSS "Ghost Weight" Purge
 # ---------------------------------------------------------
 $cDrive = Get-Volume -DriveLetter C -ErrorAction SilentlyContinue
 if ($cDrive) {
     $percentFree = [math]::Round(($cDrive.SizeRemaining / $cDrive.Size) * 100, 2)
     if ($percentFree -lt 15) {
-        $reportLog += "STORAGE:  [REMEDIATED] C: Drive critically low ($percentFree% free). Purging temp files..."
+        $reportLog += "STORAGE:  [REMEDIATED] C: Drive critically low ($percentFree% free). Initiating Deep Clean..."
         Remove-Item -Path "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
         if ($userIsLoggedOn) {
             $userTemp = "C:\Users\$($loggedInUser.Split('\')[1])\AppData\Local\Temp\*"
             Remove-Item -Path $userTemp -Recurse -Force -ErrorAction SilentlyContinue
         }
         Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+        
+        # Purge VSS Shadow Copies
+        $initialVssCount = (vssadmin list shadows | Select-String "Shadow Copy ID").Count
+        if ($initialVssCount -gt 0) {
+            vssadmin delete shadows /all /quiet | Out-Null
+            $reportLog += "STORAGE:  [REMEDIATED] Purged $initialVssCount hidden Volume Shadow Copies (VSS) to reclaim 'Ghost Weight'."
+        }
     } else {
         $reportLog += "STORAGE:  [OK] C: Drive space is healthy ($percentFree% free)."
     }
 }
 
 # ---------------------------------------------------------
-# Phase 4: Network Infrastructure Optimization
+# Phase 5: Business Environment Optimization (Telemetry & Xbox Kill)
+# ---------------------------------------------------------
+$osInfo = Get-CimInstance Win32_OperatingSystem
+if ($osInfo.OperatingSystemSKU -eq 48 -or $osInfo.Caption -match "Pro|Enterprise") {
+    
+    # 1. Kill Telemetry via Registry
+    $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"
+    if (!(Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+    $telemetryVal = (Get-ItemProperty -Path $regPath -Name "AllowTelemetry" -ErrorAction SilentlyContinue).AllowTelemetry
+    if ($telemetryVal -ne 0) {
+        Set-ItemProperty -Path $regPath -Name "AllowTelemetry" -Value 0 -Type DWord -Force
+        $reportLog += "SYSTEM:   [REMEDIATED] Windows Telemetry (DiagTrack) forcefully restricted via Registry."
+    }
+
+    # 2. Disable heavy, unused consumer services
+    $servicesToDisable = @("DiagTrack", "dmwappushservice", "XblAuthManager", "XblGameSave", "XboxNetApiSvc", "XboxGipSvc")
+    $disabledCount = 0
+
+    foreach ($svcName in $servicesToDisable) {
+        $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
+        if ($svc -and $svc.StartType -ne 'Disabled') {
+            Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+            Set-Service -Name $svcName -StartupType Disabled -ErrorAction SilentlyContinue
+            $disabledCount++
+        }
+    }
+
+    if ($disabledCount -gt 0) {
+        $reportLog += "SYSTEM:   [REMEDIATED] Disabled $disabledCount unused consumer services (Xbox/Telemetry) bogging down the OS."
+    } else {
+        $reportLog += "SYSTEM:   [OK] Telemetry and Xbox services are appropriately disabled."
+    }
+}
+
+# ---------------------------------------------------------
+# Phase 6: Network Infrastructure Optimization
 # ---------------------------------------------------------
 Clear-DnsClientCache
 $reportLog += "NETWORK:  [REMEDIATED] DNS Resolver Cache flushed."
@@ -152,7 +183,7 @@ foreach ($nic in $nicRegPaths) {
 if (-not $powerManagementChanged) { $reportLog += "NETWORK:  [OK] Network Power Save Modes are correctly disabled." }
 
 # ---------------------------------------------------------
-# Phase 5: Stuck Installer Remediation
+# Phase 7: Stuck Installer Remediation
 # ---------------------------------------------------------
 $InstallerNames = @("msiexec", "setup", "install", "issetup", "dism", "TiWorker", "TrustedInstaller")
 $killedInstallers = 0
@@ -172,7 +203,7 @@ if ($killedInstallers -gt 0) {
 }
 
 # ---------------------------------------------------------
-# Phase 6: Application Updates & Scheduling
+# Phase 8: Application Updates & Scheduling
 # ---------------------------------------------------------
 $wingetArgs = "upgrade --all --silent --accept-package-agreements --accept-source-agreements"
 
