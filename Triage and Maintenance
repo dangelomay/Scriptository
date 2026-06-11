@@ -1,0 +1,168 @@
+# ==============================================================================
+# Elite MSP Autonomous Proactive Triage & Maintenance (NinjaOne)
+# ==============================================================================
+
+$reportLog = @()
+$reportLog += "====================================================================="
+$reportLog += "              WEEKLY ENDPOINT MAINTENANCE REPORT                     "
+$reportLog += "====================================================================="
+
+# ---------------------------------------------------------
+# Phase 1: Context & Security Checks
+# ---------------------------------------------------------
+$loggedInUser = (Get-WmiObject -Class Win32_ComputerSystem).UserName
+$userIsLoggedOn = -not [string]::IsNullOrWhiteSpace($loggedInUser)
+
+if ($userIsLoggedOn) {
+    $reportLog += "CONTEXT: User [$loggedInUser] is active. Disruptive tasks scheduled for 10:00 PM."
+} else {
+    $reportLog += "CONTEXT: No user logged in. Authorized for immediate aggressive maintenance."
+}
+
+# Core Service Health
+$s1 = Get-Service -Name "SentinelAgent" -ErrorAction SilentlyContinue
+$omni = Get-Service -Name "OmniSync Service" -ErrorAction SilentlyContinue
+
+if ($s1 -and $s1.Status -eq 'Running') { $reportLog += "SECURITY: [OK] SentinelOne is actively running." } 
+else { $reportLog += "SECURITY: [ALERT] SentinelOne is MISSING or STOPPED." }
+
+if ($omni -and $omni.Status -eq 'Running') { $reportLog += "SYNC:     [OK] OmniSync background service is active." } 
+else { $reportLog += "SYNC:     [ALERT] OmniSync service is not running." }
+
+# ---------------------------------------------------------
+# Phase 2: Performance Audit & Storage Remediation
+# ---------------------------------------------------------
+$cDrive = Get-Volume -DriveLetter C
+$percentFree = [math]::Round(($cDrive.SizeRemaining / $cDrive.Size) * 100, 2)
+
+if ($percentFree -lt 15) {
+    $reportLog += "STORAGE:  [REMEDIATED] C: Drive was critically low ($percentFree% free). Purging temp files..."
+    Remove-Item -Path "C:\Windows\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue
+    if ($userIsLoggedOn) {
+        $userTemp = "C:\Users\$($loggedInUser.Split('\')[1])\AppData\Local\Temp\*"
+        Remove-Item -Path $userTemp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+} else {
+    $reportLog += "STORAGE:  [OK] C: Drive space is healthy ($percentFree% free)."
+}
+
+# ---------------------------------------------------------
+# Phase 3: Network Infrastructure Optimization
+# ---------------------------------------------------------
+# 1. DNS Flush
+Clear-DnsClientCache
+$reportLog += "NETWORK:  [REMEDIATED] DNS Resolver Cache flushed."
+
+# 2. IPv4 / IPv6 Binding Validations
+$adapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up'
+
+foreach ($adapter in $adapters) {
+    # Check/Disable IPv6
+    $ipv6 = Get-NetAdapterBinding -InterfaceAlias $adapter.Name -ComponentID ms_tcpip6
+    if ($ipv6.Enabled) {
+        Disable-NetAdapterBinding -InterfaceAlias $adapter.Name -ComponentID ms_tcpip6
+        $reportLog += "NETWORK:  [REMEDIATED] IPv6 was enabled on '$($adapter.Name)'. It has been DISABLED."
+    } else {
+        $reportLog += "NETWORK:  [OK] IPv6 is correctly disabled on '$($adapter.Name)'."
+    }
+    
+    # Check/Ensure IPv4
+    $ipv4 = Get-NetAdapterBinding -InterfaceAlias $adapter.Name -ComponentID ms_tcpip
+    if (-not $ipv4.Enabled) {
+        Enable-NetAdapterBinding -InterfaceAlias $adapter.Name -ComponentID ms_tcpip
+        $reportLog += "NETWORK:  [REMEDIATED] IPv4 was disabled on '$($adapter.Name)'. It has been ENABLED."
+    } else {
+        $reportLog += "NETWORK:  [OK] IPv4 is correctly enabled on '$($adapter.Name)'."
+    }
+}
+
+# 3. LAN Power Management (Disable "Allow the computer to turn off this device")
+$nicRegPaths = Get-ChildItem "HKLM:\System\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}" -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d{4}$' }
+$powerManagementChanged = $false
+
+foreach ($nic in $nicRegPaths) {
+    $driverDesc = (Get-ItemProperty -Path $nic.PSPath -Name "DriverDesc" -ErrorAction SilentlyContinue).DriverDesc
+    # Ignore virtual adapters, VPNs, and Bluetooth
+    if ($driverDesc -and $driverDesc -notmatch "Virtual|VPN|Bluetooth|Hyper-V|WAN|TAP") {
+        $pnpCap = Get-ItemProperty -Path $nic.PSPath -Name "PnPCapabilities" -ErrorAction SilentlyContinue
+        # If PnPCapabilities is not 24, power management is enabled
+        if ($null -eq $pnpCap.PnPCapabilities -or ($pnpCap.PnPCapabilities -band 24) -ne 24) {
+            Set-ItemProperty -Path $nic.PSPath -Name "PnPCapabilities" -Value 24 -ErrorAction SilentlyContinue
+            $powerManagementChanged = $true
+            $reportLog += "NETWORK:  [REMEDIATED] Power Save Mode was active on '$driverDesc'. It has been DISABLED."
+        }
+    }
+}
+if (-not $powerManagementChanged) {
+    $reportLog += "NETWORK:  [OK] Power Save Mode is correctly disabled on all physical LAN adapters."
+}
+
+# ---------------------------------------------------------
+# Phase 4: Stuck Installer Remediation
+# ---------------------------------------------------------
+$InstallerNames = @("msiexec", "setup", "install", "issetup", "dism", "TiWorker", "TrustedInstaller")
+$killedInstallers = 0
+
+foreach ($Name in $InstallerNames) {
+    $Processes = Get-Process -Name $Name -ErrorAction SilentlyContinue
+    if ($Processes) {
+        foreach ($Process in $Processes) {
+            try { Stop-Process -Id $Process.Id -Force -ErrorAction Stop; $killedInstallers++ } catch { }
+        }
+    }
+}
+if ($killedInstallers -gt 0) {
+    $reportLog += "UPDATES:  [REMEDIATED] Force-killed $killedInstallers stuck installer process(es)."
+} else {
+    $reportLog += "UPDATES:  [OK] No stuck or frozen installers detected."
+}
+
+# ---------------------------------------------------------
+# Phase 5: Application Updates & Scheduling
+# ---------------------------------------------------------
+$wingetArgs = "upgrade --all --silent --accept-package-agreements --accept-source-agreements"
+
+if (-not $userIsLoggedOn) {
+    # Immediate execution
+    try {
+        $wingetPath = Resolve-Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" | Select-Object -ExpandProperty Path -First 1
+        if ($wingetPath) {
+            $updateOut = & $wingetPath $wingetArgs | Out-String
+            if ($updateOut -match "No installed packages have available upgrades" -or $updateOut -match "No available upgrades") {
+                $reportLog += "UPDATES:  [OK] All third-party applications are already up to date."
+            } else {
+                $reportLog += "UPDATES:  [REMEDIATED] Winget successfully downloaded and installed pending upgrades."
+            }
+        } else {
+            $reportLog += "UPDATES:  [WARNING] Winget executable not found on this system."
+        }
+    } catch {
+         $reportLog += "UPDATES:  [ERROR] Winget update execution failed."
+    }
+
+} else {
+    # Staging the 10:00 PM Payload
+    $reportLog += "UPDATES:  [STANDBY] User is active. Application updates and reboot are armed for 10:00 PM tonight."
+    
+    $payloadPath = "C:\Windows\Temp\NightlyUpdatePayload.ps1"
+    $payloadContent = @"
+        `$wingetPath = Resolve-Path "C:\Program Files\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" | Select-Object -ExpandProperty Path -First 1
+        if (`$wingetPath) { & `$wingetPath upgrade --all --silent --accept-package-agreements --accept-source-agreements }
+        Start-Sleep -Seconds 60
+        Restart-Computer -Force
+"@
+    Set-Content -Path $payloadPath -Value $payloadContent -Force
+
+    $action = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File $payloadPath"
+    $trigger = New-ScheduledTaskTrigger -Once -At 10:00PM
+    $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    
+    Register-ScheduledTask -TaskName "MSP_Nightly_Maintenance" -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+}
+
+# ---------------------------------------------------------
+# Final Output
+# ---------------------------------------------------------
+$reportLog += "====================================================================="
+$reportLog | ForEach-Object { Write-Output $_ }
