@@ -1,0 +1,152 @@
+# ==============================================================================
+# OmniSync Advanced Health Check & Auto-Remediation (NinjaOne v6)
+# ==============================================================================
+
+$serviceName = "OmniSync Service"
+$guiProcessName = "agent_gui" # Exact process name verified in Task Manager
+
+$remediationTriggered = $false
+$reportLog = @()
+
+$reportLog += "--- Starting Advanced OmniSync Health Check ---"
+
+# ---------------------------------------------------------
+# Phase 1: Windows User Status
+# ---------------------------------------------------------
+$loggedInUser = (Get-WmiObject -Class Win32_ComputerSystem).UserName
+$userIsLoggedOn = $false
+
+if ([string]::IsNullOrWhiteSpace($loggedInUser)) {
+    $reportLog += "USER STATUS: No user is currently logged into Windows (Machine is at lock/login screen)."
+} else {
+    $reportLog += "USER STATUS: Active session detected for [$loggedInUser]."
+    $userIsLoggedOn = $true
+}
+
+# ---------------------------------------------------------
+# Phase 2: Service, Tray Icon & Socket Validation
+# ---------------------------------------------------------
+$service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+
+if ($null -eq $service) {
+    $reportLog += "CRITICAL: $serviceName is not installed on this workstation."
+    $reportLog += "FINAL STATUS: FAILED - SOFTWARE NOT INSTALLED"
+    $reportLog | Write-Output
+    exit
+}
+
+# 1. Check for the System Tray GUI
+$guiProcess = Get-Process -Name "*$guiProcessName*" -ErrorAction SilentlyContinue
+
+# 2. Network Stack Check
+$isActivelySyncing = $false
+$isNetworkBound = $false
+
+if ($guiProcess) {
+    $pids = (Get-Process -Name "*$guiProcessName*").Id
+    $allSockets = Get-NetTCPConnection -OwningProcess $pids -ErrorAction SilentlyContinue
+    
+    if ($allSockets) { $isNetworkBound = $true }
+    
+    $activeTransfers = $allSockets | Where-Object { $_.State -eq 'Established' -and $_.RemotePort -eq 443 }
+    if ($activeTransfers) { $isActivelySyncing = $true }
+}
+
+# Evaluate True Health
+if ($service.Status -ne 'Running') {
+    $reportLog += "ISSUE: Background service is stopped."
+    $remediationTriggered = $true
+} elseif ($userIsLoggedOn -and -not $guiProcess) {
+    $reportLog += "ISSUE: User is logged in, but GUI (System Tray) is missing. App crashed or was mistakenly closed."
+    $remediationTriggered = $true
+} elseif (-not $userIsLoggedOn -and $service.Status -eq 'Running') {
+    $reportLog += "HEALTH CHECK: Service is running. Tray checks bypassed because no user is logged in."
+} else {
+    $reportLog += "HEALTHY: Service is up and Tray Icon is active."
+    if ($isActivelySyncing) {
+        $reportLog += "NETWORK: App is currently transferring files to the cloud."
+    } elseif ($isNetworkBound) {
+        $reportLog += "NETWORK: App is Idle/Standing By (No active transfers, but network stack is healthy)."
+    }
+}
+
+# ---------------------------------------------------------
+# Phase 3: The Escalation Ladder & GUI Injection
+# ---------------------------------------------------------
+if ($remediationTriggered) {
+    $reportLog += "Initiating remediation sequence..."
+    
+    Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+
+    Get-Process -Name "*$guiProcessName*" -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 2
+
+    $stuckService = Get-WmiObject Win32_Service -Filter "Name='$serviceName'"
+    if ($stuckService -and $stuckService.ProcessId -ne 0) {
+        $reportLog += "DEADLOCK DETECTED: Terminating hung service PID $($stuckService.ProcessId)..."
+        Stop-Process -Id $stuckService.ProcessId -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+    }
+
+    Start-Service -Name $serviceName -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 5
+
+    # --- THE SESSION JUMP: Injecting the GUI back to the user ---
+    if ($userIsLoggedOn) {
+        $checkGui = Get-Process -Name "*$guiProcessName*" -ErrorAction SilentlyContinue
+        
+        if (-not $checkGui) {
+            $reportLog += "GUI INJECTOR: Attempting to relaunch System Tray app in the user's session..."
+            
+            # Dynamically find the software installation path (Bypasses white-label naming changes)
+            $guiPath = (Get-ChildItem -Path "C:\Program Files (x86)" -Filter "$guiProcessName.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+            
+            if ($guiPath) {
+                try {
+                    # Build a temporary scheduled task acting as the logged-in user
+                    $action = New-ScheduledTaskAction -Execute $guiPath
+                    $trigger = New-ScheduledTaskTrigger -AtStartup 
+                    $principal = New-ScheduledTaskPrincipal -UserId $loggedInUser -LogonType Interactive
+                    
+                    Register-ScheduledTask -TaskName "OmniSyncGUI_Restarter" -Action $action -Principal $principal -Force | Out-Null
+                    Start-ScheduledTask -TaskName "OmniSyncGUI_Restarter"
+                    Start-Sleep -Seconds 4
+                    Unregister-ScheduledTask -TaskName "OmniSyncGUI_Restarter" -Confirm:$false | Out-Null
+                    
+                    $reportLog += "GUI INJECTOR: Successfully injected $guiProcessName.exe onto [$loggedInUser]'s desktop."
+                } catch {
+                    $reportLog += "GUI INJECTOR: Failed to inject via Scheduled Task. Error: $($_.Exception.Message)"
+                }
+            } else {
+                $reportLog += "GUI INJECTOR: Could not locate $guiProcessName.exe on the C: drive."
+            }
+        }
+    }
+}
+
+# ---------------------------------------------------------
+# Phase 4: Final Success Evaluation (The Alert Output)
+# ---------------------------------------------------------
+$reportLog += ""
+$reportLog += "====================================================================="
+
+$finalService = Get-Service -Name $serviceName
+$finalGui = Get-Process -Name "*$guiProcessName*" -ErrorAction SilentlyContinue
+
+if (-not $userIsLoggedOn) {
+    $reportLog += "FINAL STATUS: STANDBY - No user logged in. Background service is $($finalService.Status)."
+} else {
+    if ($finalService.Status -eq 'Running' -and $finalGui) {
+        $reportLog += "FINAL STATUS: SUCCESS - [$loggedInUser] is logged in. OmniSync GUI is running and healthy."
+    } elseif ($finalService.Status -eq 'Running' -and -not $finalGui) {
+        $reportLog += "FINAL STATUS: ACTION REQUIRED - Service is running, but System Tray GUI failed to launch for [$loggedInUser]."
+    } else {
+        $reportLog += "FINAL STATUS: CRITICAL FAILURE - The OmniSync service failed to start for [$loggedInUser]."
+    }
+}
+
+$reportLog += "====================================================================="
+
+# Output everything cleanly to the NinjaOne Console
+$reportLog | ForEach-Object { Write-Output $_ }
