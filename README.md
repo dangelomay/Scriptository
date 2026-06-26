@@ -1,47 +1,53 @@
-# Scriptository
+This repository description is crafted to sound like a professional infrastructure engineer’s toolkit. It emphasizes "Trench Engineering"—the ability to build reliable, scalable solutions in messy, real-world MSP environments.
 
+You can copy and paste this directly into your `README.md` file.
 
+---
 
-# IT Automation & Scripting Repository
+# MSP-Trench-Toolkit
 
-## Overview
-This repository serves as a centralized, version-controlled vault for IT automation scripts, endpoint management tools, and custom utilities. The primary focus of this collection is to streamline operations, enforce standard configurations, and enable zero-touch remediation via Remote Monitoring and Management (RMM) platforms, specifically **NinjaOne**.
+A curated collection of PowerShell automation scripts designed for enterprise infrastructure management and MSP (Managed Service Provider) maintenance.
 
-## Repository Contents
+### Philosophy: Trench Engineering
 
-### 1. Endpoint Management & Remediation
-* **Outlook COM Add-in Remediation (`outlook-addin-kill.ps1`)**
-    * **Purpose:** Resolves critical Outlook crashes caused by rogue COM add-ins.
-    * **Function:** Runs as SYSTEM to mount offline user registry hives (`NTUSER.DAT`) and force-disables all active Outlook add-ins across the Local Machine and all user profiles. Outputs a formatted remediation report for the RMM activity feed.
-* **Enterprise Onboarding Master Script (`enterprise-onboarding.ps1`)**
-    * **Purpose:** Cleans and secures new Windows workstation deployments.
-    * **Function:** Neutralizes consumer features, disables telemetry, removes bloatware, and stops non-essential background services to establish a baseline enterprise configuration.
-* **WinUtil JSON Deployment Script (`winutil-deploy.ps1`)**
-    * **Purpose:** Automates the deployment of standard Windows configurations.
-    * **Function:** Pulls and applies a customized JSON configuration file for Chris Titus Tech's Windows Utility across multiple managed endpoints silently.
+In the trenches, you don't always have the luxury of greenfield deployments or enterprise-grade documentation. You have legacy systems, broken configurations, and tight SLAs. This toolkit is built to handle those realities—stripping away the "bloat," automating the manual audits, and providing actionable reporting when the GUI fails you.
 
-### 2. RMM & Ticketing Automation
-* **NinjaOne API Ticket Auto-Resolution (`ninja-auto-resolve.ps1`)**
-    * **Purpose:** Enables true zero-touch IT support for common system alerts (e.g., high CPU usage).
-    * **Function:** Authenticates with the NinjaOne API to automatically assign a triggered ticket to a specific technician, inject a detailed remediation log into the ticket notes, and close/resolve the ticket without manual intervention.
+These scripts are written to be executed via RMM (specifically **NinjaOne**) with SYSTEM-level privileges, focusing on **proactive remediation** rather than reactive fire-fighting.
 
-### 3. Security & Auditing
-* **Security Reconnaissance Script (`av-recon.ps1`)**
-    * **Purpose:** Audits endpoint security compliance.
-    * **Function:** Scans the target endpoint via WMI/Security Center to detect and log exactly which Antivirus and Endpoint Protection products are currently installed and actively running.
+---
 
-### 4. Custom Projects & Utilities
-* **Tesla Lock Sound Randomizer (`tesla-lock-chime.py` / `.sh`)**
-    * **Purpose:** Custom automation for vehicle media.
-    * **Function:** A lightweight script designed for a Raspberry Pi to rotate and randomize `.wav` lock sound files on a connected USB drive for a Tesla vehicle.
+### Key Categories
 
-## Deployment Notes (NinjaOne)
-When deploying these scripts via NinjaOne, pay strict attention to the **Run As** context:
-* Scripts modifying `HKEY_CURRENT_USER` or interacting with the active desktop session must be run as **Logged-on User**.
-* Scripts modifying `HKEY_LOCAL_MACHINE`, interacting with the NinjaOne API, or mounting offline user profiles (like the Outlook Add-in script) must be run as **System**.
+#### 1. Hardware & Asset Auditing
 
-### API Credentials
-The `ninja-auto-resolve.ps1` script requires NinjaOne API credentials. **Never hardcode these into the script.** Ensure your Client ID and Client Secret are stored as secure Global Script Variables within your NinjaOne instance (`$env:NINJA_CLIENT_ID` and `$env:NINJA_CLIENT_SECRET`).
+* **System Age & Hardware Audit:** Goes beyond standard BIOS strings. Detects true system build (Custom vs. Prebuilt), calculates precise system age since OS installation, and reports OS build versions for fleet compliance.
+* **Storage Auditor:** A native PowerShell tool that scans C: drives for "death by a thousand cuts" bloatware and hidden system data (VSS, system logs, cache) to reclaim disk space without 3rd-party tools.
 
-## Disclaimer
-Always test scripts on a local VM or a small, non-critical test group before deploying them en masse to production endpoints.
+#### 2. Proactive Maintenance & Remediation
+
+* **Stuck Installer Terminator:** A surgical tool to identify and kill frozen installer processes (`msiexec`, `dism`, `TiWorker`, etc.) that block maintenance windows.
+* **Wave Browser Annihilator:** A forced-removal script that targets stubborn PUPs (Potentially Unwanted Programs), wipes registry keys, and clears scheduled tasks that attempt to resurrect the browser.
+* **System-Wide BitLocker Decryption:** An automated background process to decrypt drives, releasing CPU overhead for high-performance workloads or migrations.
+* **NTP Hard-Reset:** A "nuclear" fix for time-drift issues in Domain environments, stripping corrupted registry drift-data and forcing a resync with reliable NTP pools.
+
+#### 3. NinjaRMM Operations
+
+* **User & Admin Audit:** Returns a real-time report of all local/domain profiles, identifies who is currently logged in, flags unauthorized local admin accounts, and enforces standardized "Omnitech" administrator access.
+* **Server Downtime Automator:** Logic for policy-level conditions to create high-priority tickets for server downtime, bypassing Level 1 triage to immediately alert senior staff.
+
+---
+
+### Usage & Safety Guidelines
+
+* **Execution:** Most of these scripts require `RunAsAdministrator` or must be deployed via your RMM as `NT AUTHORITY\SYSTEM`.
+* **Disclaimer:** These scripts are designed for production infrastructure. While tested in field environments, always run a test-case on a non-critical endpoint before deploying to a global fleet.
+* **Philosophy:** These tools are meant to be the "scalpel," not the "sledgehammer." They prioritize data integrity and system stability.
+
+---
+
+### About
+
+Built by an Infrastructure Engineer focused on enterprise-grade architecture, automation, and minimizing technical debt.
+
+* *Built for: Proactive MSP Maintenance*
+* *Focus: Stability, Scalability, and Automation*
