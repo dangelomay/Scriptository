@@ -1,0 +1,75 @@
+# ==============================================================================
+# Script: System Age, OS, & Hardware Audit Report
+# Execution: Run as SYSTEM via NinjaRMM
+# Objective: OS Build, Install Date, System Age, and Build Type (Custom vs Prebuilt)
+# ==============================================================================
+
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "   SYSTEM AGE & HARDWARE AUDIT REPORT   " -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+
+# 1. OS & Build Information
+$OS = Get-CimInstance Win32_OperatingSystem
+$OSName = $OS.Caption
+$OSBuild = $OS.BuildNumber
+$InstallDate = $OS.InstallDate
+
+Write-Host "OS              : " -NoNewline; Write-Host "$OSName" -ForegroundColor Green
+Write-Host "OS Build        : " -NoNewline; Write-Host "$OSBuild" -ForegroundColor Green
+
+# 2. Age Calculation
+$FormattedDate = $InstallDate.ToString("MMMM dd, yyyy")
+$AgeDays = (New-TimeSpan -Start $InstallDate -End (Get-Date)).Days
+$AgeYears = [math]::Round($AgeDays / 365.25, 1)
+
+Write-Host "OS Install Date : " -NoNewline; Write-Host $FormattedDate -ForegroundColor Green
+Write-Host "System Age      : " -NoNewline; Write-Host "$AgeYears years ($AgeDays days)" -ForegroundColor Green
+
+# 3. Hardware Information Pull (Chassis vs Motherboard)
+$CS = Get-CimInstance Win32_ComputerSystem
+$BB = Get-CimInstance Win32_BaseBoard
+
+$SysMan = $CS.Manufacturer.Trim()
+$SysMod = $CS.Model.Trim()
+$BoardMan = $BB.Manufacturer.Trim()
+$BoardMod = $BB.Product.Trim()
+
+# 4. Analyze Build Type (Custom vs Prebuilt Logic)
+$CustomIndicators = @("To be filled by O.E.M.", "System manufacturer", "System Product Name", "ASUSTeK", "Gigabyte", "Micro-Star", "MSI", "ASRock")
+$PrebuiltIndicators = @("Dell", "HP", "Hewlett-Packard", "Lenovo", "Acer", "Microsoft Corporation", "Apple")
+
+$IsCustom = $false
+foreach ($indicator in $CustomIndicators) {
+    if ($SysMan -match $indicator -or $SysMod -match $indicator) {
+        $IsCustom = $true
+    }
+}
+foreach ($indicator in $PrebuiltIndicators) {
+    if ($SysMan -match $indicator) {
+        $IsCustom = $false
+    }
+}
+
+# 5. Final Output Formatting
+if ($IsCustom) {
+    $BuildType = "Custom-Built PC"
+    $FinalMan = $BoardMan
+    $FinalMod = $BoardMod
+} else {
+    $BuildType = "Prebuilt PC / Enterprise OEM"
+    $FinalMan = $SysMan
+    $FinalMod = $SysMod
+    
+    # Failsafe: If a prebuilt somehow returns generic OEM data, fall back to the board
+    if ([string]::IsNullOrWhiteSpace($FinalMan) -or $FinalMan -match "O.E.M.") {
+        $FinalMan = $BoardMan
+        $FinalMod = $BoardMod
+        $BuildType = "Custom-Built PC (Assumed)"
+    }
+}
+
+Write-Host "----------------------------------------"
+Write-Host "Build Type      : " -NoNewline; Write-Host $BuildType -ForegroundColor Yellow
+Write-Host "Manufacturer    : " -NoNewline; Write-Host $FinalMan -ForegroundColor White
+Write-Host "Model / Board   : " -NoNewline; Write-Host $FinalMod -ForegroundColor White
+Write-Host "========================================" -ForegroundColor Cyan
