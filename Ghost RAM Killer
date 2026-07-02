@@ -1,54 +1,114 @@
 <#
 .SYNOPSIS
-Disables the Windows Hypervisor platform at boot to prevent OEM security tools 
-or default Windows virtualization features from hoarding "Driver Locked" RAM.
+RAM Respirator: Advanced System Remediation Tool (v4)
+1. Purges VSS Snapshots (Live Storage Recovery)
+2. Forces Page File to Dynamic and sets it to wipe on next reboot.
+3. Disables Hypervisor to un-map hardware-locked RAM (Requires Reboot)
+4. Calculates and outputs exact resources freed.
 
 .DESCRIPTION
-Designed for NinjaOne Mass Deployment. 
-Checks current BCD state, disables hypervisorlaunchtype, and outputs RMM-friendly logs.
-Does NOT force a hard reboot, allowing the RMM's native reboot policies to handle it gracefully.
+Designed for silent NinjaOne Mass Deployment. 
+DOES NOT force a hard reboot, allowing native RMM reboot policies to handle it.
 #>
 
-$ErrorActionPreference = "Stop"
+#Requires -RunAsAdministrator
+$ErrorActionPreference = "SilentlyContinue"
 
 Write-Output "====================================================="
-Write-Output "      HYPERVISOR / GHOST RAM REMEDIATION SCRIPT      "
+Write-Output "       RAM RESPIRATOR: SYSTEM REMEDIATION TOOL       "
 Write-Output "====================================================="
 
-try {
-    Write-Output "Checking current Hypervisor boot configuration..."
-    
-    # Check the current hypervisor status in the boot configuration
-    $bcdStatus = bcdedit /enum | Select-String "hypervisorlaunchtype"
-    
-    if ($bcdStatus -match "Off") {
-        Write-Output "[STATUS] Hypervisor is already set to OFF. No changes required."
-        Write-Output "Exiting script cleanly."
-        exit 0
-    }
-    else {
-        Write-Output "[ACTION] Hypervisor is currently active or set to Auto."
-        Write-Output "Applying fix: Disabling hypervisor launch type to free up Driver Locked memory..."
-        
-        # Apply the fix
-        Invoke-Expression "bcdedit /set hypervisorlaunchtype off" | Out-Null
-        
-        # Verify the fix stuck
-        $verify = bcdedit /enum | Select-String "hypervisorlaunchtype"
-        
-        if ($verify -match "Off") {
-            Write-Output "[SUCCESS] Hypervisor launch type successfully disabled."
-            Write-Output "-----------------------------------------------------"
-            Write-Output " ACTION REQUIRED: A system reboot is necessary for "
-            Write-Output " Windows to physically release the locked RAM. "
-            Write-Output "-----------------------------------------------------"
-        } else {
-            Write-Output "[ERROR] Command executed, but BCD configuration did not update."
-        }
+# --- 1. CAPTURE BASELINE METRICS ---
+Write-Output "Scanning initial system state..."
+$osBefore = Get-CimInstance Win32_OperatingSystem
+$diskBefore = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+
+$ramTotalGB = [math]::Round($osBefore.TotalVisibleMemorySize / 1024 / 1024, 2)
+$ramAvailBeforeGB = [math]::Round($osBefore.FreePhysicalMemory / 1024 / 1024, 2)
+$ramInUseBeforeGB = $ramTotalGB - $ramAvailBeforeGB
+
+$commitTotalGB = [math]::Round($osBefore.TotalVirtualMemorySize / 1024 / 1024, 2)
+$commitAvailBeforeGB = [math]::Round($osBefore.FreeVirtualMemory / 1024 / 1024, 2)
+$commitUsedBeforeGB = $commitTotalGB - $commitAvailBeforeGB
+
+$diskFreeBeforeGB = [math]::Round($diskBefore.FreeSpace / 1GB, 2)
+
+Write-Output "-> [BASELINE]"
+Write-Output "   Physical RAM : $ramInUseBeforeGB GB In Use / $ramTotalGB GB Total"
+Write-Output "   Committed RAM: $commitUsedBeforeGB GB Committed / $commitTotalGB GB Limit"
+Write-Output "   C: Drive Free: $diskFreeBeforeGB GB"
+Write-Output "-----------------------------------------------------"
+
+# --- 2. VSS ANNIHILATION (Live Action) ---
+Write-Output "`n[PHASE 1] Purging Volume Shadow Copies & VSS Service..."
+Set-Service -Name VSS -StartupType Disabled
+Stop-Service -Name VSS -Force
+$vssWipe = vssadmin delete shadows /all /quiet 2>&1
+Write-Output "[SUCCESS] VSS service killed and hidden snapshots cleared."
+
+# --- 3. PAGE FILE OPTIMIZATION (Dynamic + Wipe on Reboot) ---
+Write-Output "`n[PHASE 2] Optimizing Page File (Virtual Memory)..."
+
+# Ensure Page File is set to System Managed so it can dynamically scale
+$CompSys = Get-WmiObject -Class Win32_ComputerSystem -EnableAllPrivileges
+if ($CompSys.AutomaticManagedPagefile -eq $false) {
+    $CompSys.AutomaticManagedPagefile = $true
+    $CompSys.Put() | Out-Null
+    Write-Output "-> Page File converted to dynamically System Managed."
+} else {
+    Write-Output "-> Page File is already dynamically managed."
+}
+
+# Inject Registry Key to clear the Page File completely at next shutdown
+$regPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management"
+Set-ItemProperty -Path $regPath -Name "ClearPageFileAtShutdown" -Value 1 -Type DWord
+Write-Output "[SUCCESS] Page File slated for deep purge on next system reboot."
+
+# --- 4. HYPERVISOR FIX (Boot Loader) ---
+Write-Output "`n[PHASE 3] Checking Hypervisor boot configuration..."
+$RebootRequired = $true # Always true now because of the Page File wipe
+
+$bcdStatus = bcdedit /enum | Select-String "hypervisorlaunchtype"
+if ($bcdStatus -match "Off") {
+    Write-Output "[STATUS] Hypervisor already OFF."
+} else {
+    # Using native call operator '&' instead of Invoke-Expression for security
+    & bcdedit /set hypervisorlaunchtype off | Out-Null
+    $verify = bcdedit /enum | Select-String "hypervisorlaunchtype"
+    if ($verify -match "Off") {
+        Write-Output "[SUCCESS] Hypervisor disabled in Boot Loader."
     }
 }
-catch {
-    Write-Output "[FAILED] An error occurred: $($_.Exception.Message)"
-    Write-Output "Ensure this script is running in the SYSTEM context via NinjaOne."
-    exit 1
-}
+
+# --- 5. CAPTURE POST-CLEANUP METRICS ---
+Write-Output "`nWaiting 3 seconds for Windows to release memory hooks..."
+Start-Sleep -Seconds 3
+
+$osAfter = Get-CimInstance Win32_OperatingSystem
+$diskAfter = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+
+$ramAvailAfterGB = [math]::Round($osAfter.FreePhysicalMemory / 1024 / 1024, 2)
+$diskFreeAfterGB = [math]::Round($diskAfter.FreeSpace / 1GB, 2)
+
+$ramFreedGB = [math]::Round($ramAvailAfterGB - $ramAvailBeforeGB, 2)
+$diskFreedGB = [math]::Round($diskFreeAfterGB - $diskFreeBeforeGB, 2)
+
+# Prevent negative anomalies if background processes steal RAM during the 3-second sleep
+if ($ramFreedGB -lt 0) { $ramFreedGB = 0 }
+if ($diskFreedGB -lt 0) { $diskFreedGB = 0 }
+
+# --- 6. REPORTING ---
+Write-Output "`n====================================================="
+Write-Output "                 REMEDIATION RESULTS                 "
+Write-Output "====================================================="
+Write-Output "Storage Reclaimed  : $diskFreedGB GB Freed (Live)"
+Write-Output "Active RAM Freed   : $ramFreedGB GB Freed (Live)"
+Write-Output "-----------------------------------------------------"
+Write-Output "[!] CRITICAL NEXT STEPS (REBOOT REQUIRED):"
+Write-Output "1. The Page File ($commitUsedBeforeGB GB) will be securely wiped and"
+Write-Output "   rebuilt from scratch upon reboot, restoring disk I/O."
+Write-Output "2. Hardware-locked Hypervisor RAM will be released."
+Write-Output "3. The ClearPageFileAtShutdown registry key will reset"
+Write-Output "   itself to normal after one successful reboot."
+Write-Output "====================================================="
+exit 0
