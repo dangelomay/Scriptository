@@ -1,0 +1,58 @@
+<#
+.SYNOPSIS
+    Remote Dell BIOS SATA Operation Flip (RAID -> AHCI) with Registry Prep
+.DESCRIPTION
+    Prepares Windows registry to load native AHCI drivers on next boot to prevent INACCESSIBLE_BOOT_DEVICE, 
+    then uses Dell's PowerShell provider to flip the BIOS from RAID/RST to AHCI.
+#>
+
+Write-Output "[*] INITIATING OPERATION: HOT-SWAP AHCI"
+
+# ---------------------------------------------------------
+# PHASE 1: ARM NATIVE AHCI DRIVERS (REGISTRY)
+# ---------------------------------------------------------
+Write-Output "[*] Injecting storahci keys..."
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\storahci" -Name "Start" -Value 0 -ErrorAction SilentlyContinue
+if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\storahci\StartOverride") {
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\storahci\StartOverride" -Name "0" -Value 0 -ErrorAction SilentlyContinue
+}
+
+# ---------------------------------------------------------
+# PHASE 2: NEUTRALIZE INTEL RST (REGISTRY)
+# ---------------------------------------------------------
+Write-Output "[*] Neutralizing iaStorV & iaStorAVC..."
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\iaStorV" -Name "Start" -Value 0 -ErrorAction SilentlyContinue
+if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\iaStorV\StartOverride") {
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\iaStorV\StartOverride" -Name "0" -Value 0 -ErrorAction SilentlyContinue
+}
+
+if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\iaStorAVC") {
+    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\iaStorAVC" -Name "Start" -Value 0 -ErrorAction SilentlyContinue
+    if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Services\iaStorAVC\StartOverride") {
+        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\iaStorAVC\StartOverride" -Name "0" -Value 0 -ErrorAction SilentlyContinue
+    }
+}
+
+# ---------------------------------------------------------
+# PHASE 3: DELL BIOS FLIP VIA POWERSHELL
+# ---------------------------------------------------------
+Write-Output "[*] Forcing TLS 1.2 for Dell Repo access..."
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+Write-Output "[*] Installing DellBIOSProvider Module..."
+Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Confirm:$false -ErrorAction SilentlyContinue
+Install-Module -Name DellBIOSProvider -Force -Confirm:$false -AcceptLicense -ErrorAction Stop
+Import-Module DellBIOSProvider
+
+Write-Output "[*] Flipping BIOS SATA Operation to AHCI..."
+# Note: A BIOS admin password must not be set, or this will require an auth token.
+try {
+    Set-Item -Path "DellSmbios:\SystemDevices\SataOperation" -Value "AHCI" -ErrorAction Stop
+    Write-Output "[+] BIOS successfully staged for AHCI."
+} catch {
+    Write-Warning "[-] Failed to set BIOS. Ensure no BIOS password is set and Dell system supports WMI configuration."
+}
+
+Write-Output "[*] PAYLOAD DELIVERED. SYSTEM REQUIRES REBOOT TO FINALIZE."
+# Uncomment the line below to force an auto-reboot, or reboot manually via Ninja.
+# Restart-Computer -Force
